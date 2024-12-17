@@ -23,6 +23,8 @@ contract NFTMarketplace is ERC721URIStorage {
 
     // Test event
     event nftCreated(uint256 nftTokenId, string nftURI, uint256 sellingPrice);
+    event Unlisted(address previousOwner, address newOwner, uint256 tokenId);
+    event Relisted(address seller, uint256 tokenId);
 
     /* Parameters of the NFT listed on the marketplace */
     struct ListedNFT {
@@ -45,15 +47,20 @@ contract NFTMarketplace is ERC721URIStorage {
         return listPrice;
     }
     
-    /* Get the latest listed NFT */
-    function getLatestListedNFT() public view returns(ListedNFT memory) {
+    /* Get the latest listed NFT */ 
+    /* What if the latest listed NFT was taken off the market, then we need to check the previously listed NFT */
+    function getLatestListedNFT() public view returns(ListedNFT memory nft) {
         uint256 currentTokenId = _tokenIds;
-        return idToListedNFT[currentTokenId];
+        if(idToListedNFT[currentTokenId].currentlyListed == true){
+            return idToListedNFT[currentTokenId];
+        }
     }
 
     /* Pass in a tokenid and get the listed token for that */
-    function getListedNFT(uint256 tokenId) public view returns(ListedNFT memory) {
-        return idToListedNFT[tokenId];
+    function getListedNFT(uint256 tokenId) public view returns(ListedNFT memory nft) {
+        if(idToListedNFT[tokenId].currentlyListed == true){
+            return idToListedNFT[tokenId];
+        }
     }
 
     function getCurrentTokenId() public view returns(uint256) {
@@ -91,31 +98,56 @@ contract NFTMarketplace is ERC721URIStorage {
         _transfer(msg.sender, address(this), tokenId);
     }
 
-    // function getAllNFTs() public view returns (ListedNFT[] memory) {
-    //     uint256 nftCount = _tokenIds;
-    //     ListedNFT[] memory allNFTs = new ListedNFT[](nftCount);
+    function unlist(uint256 tokenId) public {
+        require(idToListedNFT[tokenId].seller == msg.sender, "Only the seller can choose to unlist");
+        require(idToListedNFT[tokenId].currentlyListed == true, "NFT currently unlisted");
 
-    //     for(uint256 i=0; i< nftCount; i++){
-    //         ListedNFT storage nft = idToListedNFT[i];
-    //         allNFTs[i] = ListedNFT(
-    //             nft.tokenId,
-    //             nft.owner,
-    //             nft.seller,
-    //             nft.sellingPrice,
-    //             nft.currentlyListed
-    //         );
-    //     }
-    //     return allNFTs;
-    // }
+        idToListedNFT[tokenId].currentlyListed = false;
+        idToListedNFT[tokenId].owner = payable(msg.sender);
 
-        function getAllNFTs() public view returns (ListedNFT[] memory) {
-            uint256 nftCount = _tokenIds;
-            ListedNFT[] memory allNFTs = new ListedNFT[](nftCount);
+        _transfer(address(this), msg.sender, tokenId);
+        emit Unlisted(address(this), msg.sender, tokenId);
+    }
 
-            for(uint256 i=0; i< nftCount; i++){
-                allNFTs[i] = idToListedNFT[i];
+    function relist(uint256 tokenId) public {
+        require(idToListedNFT[tokenId].currentlyListed == false, "NFT already listed");
+        require(idToListedNFT[tokenId].owner == msg.sender, "Only owner can re-list the NFT");
+
+        idToListedNFT[tokenId].currentlyListed = true;
+        idToListedNFT[tokenId].seller = payable(msg.sender);
+        
+        _transfer(msg.sender, address(this), tokenId);
+        emit Relisted(msg.sender, tokenId);
+
+    }
+
+    function getAllNFTs() public view returns (ListedNFT[] memory) {
+        uint256 nftCount = _tokenIds;
+        uint256 currentlyAvailable = 0;
+
+        for(uint i=0; i<nftCount; i++){
+            if(idToListedNFT[i+1].currentlyListed == true){
+                currentlyAvailable ++;
             }
-            return allNFTs;
+        }
+
+        ListedNFT[] memory allNFTs = new ListedNFT[](currentlyAvailable);
+        uint256 currentIndex = 0;
+
+        for(uint256 i=0; i < nftCount; i++){ 
+            if(idToListedNFT[i+1].currentlyListed == true){
+                ListedNFT storage nft = idToListedNFT[i+1];
+                allNFTs[currentIndex] = ListedNFT(
+                    nft.tokenId,
+                    nft.owner,
+                    nft.seller,
+                    nft.sellingPrice,
+                    nft.currentlyListed
+                );
+                currentIndex ++;
+            }
+        }
+        return allNFTs;
     }
 
     function getMyNFTs() public view returns(ListedNFT[] memory) {
@@ -124,7 +156,7 @@ contract NFTMarketplace is ERC721URIStorage {
 
         // Getting the number of nfts owned by the user
         for(uint256 i=0; i< currentTokenId; i++){
-            if(idToListedNFT[i].owner == msg.sender || idToListedNFT[i].seller == msg.sender) {
+            if(idToListedNFT[i+1].owner == msg.sender || idToListedNFT[i+1].seller == msg.sender) {
                 ownerNftCount ++;
             }
         }
@@ -133,34 +165,34 @@ contract NFTMarketplace is ERC721URIStorage {
         uint256 currentIndex = 0;
 
         for(uint i=0; i<ownerNftCount; i++){
-            if(idToListedNFT[i].owner == msg.sender || idToListedNFT[i].seller == msg.sender){
-                ownerNFTs[currentIndex] = idToListedNFT[i];
+            if(idToListedNFT[i+1].owner == msg.sender || idToListedNFT[i+1].seller == msg.sender){
+                ownerNFTs[currentIndex] = idToListedNFT[i+1];
                 currentIndex++;
             }
         }
-
         return ownerNFTs;
     }
 
-    function executeSale(uint256 tokenId) public payable {
+    function buyNft(uint256 tokenId) public payable {
         uint256 price = idToListedNFT[tokenId].sellingPrice;
         address seller = idToListedNFT[tokenId].seller;
         bool currentlyListed = idToListedNFT[tokenId].currentlyListed;
 
         if(currentlyListed == true){
             require(msg.value == price, "Not enough funds to buy the nft");
-
             
-            uint256 marketplaceCommission = price * 25/100;
-            uint256 actualSellingPrice = price - marketplaceCommission;
+            uint256 marketplaceCommission = msg.value * 25/100;
+            uint256 actualSellingPrice = msg.value - marketplaceCommission;
 
-            payable(address(this)).transfer(marketplaceCommission);
-            payable(seller).transfer(actualSellingPrice);
-
-            _transfer(address(this), msg.sender, tokenId);
-
+            // Updating the state
             idToListedNFT[tokenId].currentlyListed = false;
             _itemSold++;
+
+            _transfer(address(this), msg.sender, tokenId);
+            
+            // Execute sale after state change
+            payable(seller).transfer(actualSellingPrice);
         }
     }
+
 }
